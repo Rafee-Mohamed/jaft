@@ -390,7 +390,7 @@ public class RaftLog {
      * @return {@code true} if a snapshot is pending
      */
     public boolean hasUnstableSnapshot() {
-        return unstableLog.nextSnapshot() != null;
+        return unstableLog.nextSnapshot().isPresent();
     }
 
     /**
@@ -410,18 +410,16 @@ public class RaftLog {
      * @throws StorageException if the storage read fails
      */
     public Snapshot snapshot() throws StorageException {
-        if (unstableLog.nextSnapshot() != null)
-            return unstableLog.nextSnapshot();
-
-        return log.snapshot();
+        var s = unstableLog.nextSnapshot();
+        return s.isPresent() ? s.get() : log.snapshot();
     }
 
     /**
-     * Returns the pending unstable snapshot, or {@code null} if none.
+     * Returns the pending unstable snapshot, or empty if none.
      *
-     * @return the unstable snapshot, or {@code null}
+     * @return the unstable snapshot, or {@link Optional#empty()} if none
      */
-    public Snapshot nextUnstableSnapshot() {
+    public Optional<Snapshot> nextUnstableSnapshot() {
         return unstableLog.nextSnapshot();
     }
 

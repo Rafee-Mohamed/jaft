@@ -250,7 +250,7 @@ public class RaftEngine {
         var messagesAfterAppend = raft.drainMessagesAfterAppend();
         var readStates = raft.drainReadStates();
 
-        var snapshot = Optional.ofNullable(raft.log().nextUnstableSnapshot());
+        var snapshot = raft.log().nextUnstableSnapshot();
 
         var entriesToPersist = raft.log().nextEntriesToPersist();
         var entriesToApply = raft.log().nextCommittedEntries();

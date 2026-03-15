@@ -4,6 +4,7 @@ import io.disys.jaft.core.Snapshot;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
@@ -24,8 +25,8 @@ import java.util.OptionalLong;
  */
 public class UnstableLog {
 
-    /** Pending snapshot awaiting persistence, or {@code null} if none. */
-    private Snapshot snapshot;
+    /** Pending snapshot awaiting persistence, or {@link Optional#empty()} if none. */
+    private Optional<Snapshot> snapshot;
 
     /** Entries not yet persisted to {@link LogStorage}. */
     private List<Entry> entries;
@@ -55,8 +56,76 @@ public class UnstableLog {
         this.entries = new ArrayList<>();
         this.offset = storageLastIndex + 1;
         this.persistingUpTo = this.offset;
-        this.snapshot = null;
+        this.snapshot = Optional.empty();
         this.snapshotInProgress = false;
+    }
+
+    /**
+     * Package-private constructor for test setup. Empty entries, snapshot only.
+     * Offset is derived as {@code snapshot.index() + 1}.
+     *
+     * @param snapshot the pending snapshot (must not be null)
+     * @throws IllegalArgumentException if snapshot is null
+     */
+    UnstableLog(Snapshot snapshot) {
+        if (snapshot == null) {
+            throw new IllegalArgumentException("snapshot cannot be null");
+        }
+        this.entries = new ArrayList<>();
+        this.offset = snapshot.index() + 1;
+        this.persistingUpTo = this.offset;
+        this.snapshot = Optional.of(snapshot);
+        this.snapshotInProgress = false;
+    }
+
+    /**
+     * Package-private constructor for test setup. Entries only, no snapshot.
+     * Offset is derived from {@code entries.getFirst().index()}.
+     *
+     * @param entries        entries not yet persisted (defensive copy made)
+     * @param persistingUpTo exclusive end of in-progress range
+     * @throws IllegalArgumentException if entries is empty or persistingUpTo
+     *         is outside {@code [offset, offset + entries.size()]}
+     */
+    UnstableLog(List<Entry> entries, long persistingUpTo) {
+        this(entries, persistingUpTo, null, false);
+    }
+
+    /**
+     * Package-private constructor for test setup. Entries with optional snapshot.
+     * Offset is derived from {@code entries.getFirst().index()}.
+     *
+     * <p>Invariant: {@code offset <= persistingUpTo <= offset + entries.size()}.</p>
+     *
+     * @param entries            entries not yet persisted (defensive copy made)
+     * @param persistingUpTo     exclusive end of in-progress range
+     * @param snapshot           pending snapshot, or {@code null}
+     * @param snapshotInProgress whether the snapshot is being persisted
+     * @throws IllegalArgumentException if entries is empty, persistingUpTo is
+     *         outside bounds, or snapshotInProgress is true when snapshot is null
+     */
+    UnstableLog(List<Entry> entries, long persistingUpTo, Snapshot snapshot, boolean snapshotInProgress) {
+        if (entries == null || entries.isEmpty()) {
+            throw new IllegalArgumentException("entries cannot be null or empty");
+        }
+        this.entries = new ArrayList<>(entries);
+        var offset = entries.getFirst().index();
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset (from entries.getFirst().index()) cannot be negative: " + offset);
+        }
+        var upper = offset + entries.size();
+        if (offset > persistingUpTo || persistingUpTo > upper) {
+            throw new IllegalArgumentException(
+                    "persistingUpTo must be in [offset, offset + entries.size()]: " + persistingUpTo + " not in [" + offset + ", " + upper + "]");
+        }
+        if (snapshot == null && snapshotInProgress) {
+            throw new IllegalArgumentException("snapshotInProgress cannot be true when snapshot is null");
+        }
+
+        this.offset = offset;
+        this.persistingUpTo = persistingUpTo;
+        this.snapshot = Optional.ofNullable(snapshot);
+        this.snapshotInProgress = snapshotInProgress;
     }
 
     /* ==================== GETTERS ==================== */
@@ -82,11 +151,9 @@ public class UnstableLog {
      * @return {@code snapshot.index + 1} if a snapshot exists, empty otherwise
      */
     public OptionalLong firstIndex() {
-        if (snapshot == null) {
-            return OptionalLong.empty();
-        }
+        return snapshot.map(value -> OptionalLong.of(value.index() + 1))
+                .orElseGet(OptionalLong::empty);
 
-        return OptionalLong.of(snapshot.index() + 1);
     }
 
     /**
@@ -102,10 +169,9 @@ public class UnstableLog {
         if (!entries.isEmpty())
             return OptionalLong.of(offset + entries.size() - 1);
 
-        if (snapshot != null)
-            return OptionalLong.of(snapshot.index());
+        return snapshot.map(value -> OptionalLong.of(value.index()))
+                .orElseGet(OptionalLong::empty);
 
-        return OptionalLong.empty();
     }
 
     /**
@@ -120,8 +186,10 @@ public class UnstableLog {
      */
     public OptionalLong term(long index) {
         // Check if index matches snapshot index
-        if (index < offset && snapshot != null && snapshot.index() == index) {
-            return OptionalLong.of(snapshot.term());
+        if (index < offset) {
+            return snapshot.filter(s -> s.index() == index)
+                    .map(s -> OptionalLong.of(s.term()))
+                    .orElseGet(OptionalLong::empty);
         }
 
         var lastIndex = lastIndex();
@@ -174,12 +242,12 @@ public class UnstableLog {
     /**
      * Returns the snapshot if it is not yet being persisted.
      *
-     * @return the pending snapshot, or {@code null} if none or already
-     *         in-progress
+     * @return the pending snapshot, or {@link Optional#empty()} if none or
+     *         already in-progress
      */
-    public Snapshot nextSnapshot() {
-        if (snapshot == null || snapshotInProgress)
-            return null;
+    public Optional<Snapshot> nextSnapshot() {
+        if (snapshot.isEmpty() || snapshotInProgress)
+            return Optional.empty();
 
         return snapshot;
     }
@@ -197,8 +265,7 @@ public class UnstableLog {
         if (!entries.isEmpty())
             persistingUpTo = entries.getLast().index() + 1;
 
-        if (snapshot != null)
-            snapshotInProgress = true;
+        snapshotInProgress = snapshot.isPresent();
     }
 
     /**
@@ -242,8 +309,8 @@ public class UnstableLog {
      * @param index the persisted snapshot index
      */
     public void stableSnapshotTo(long index) {
-        if (snapshot != null && snapshot.index() == index) {
-            snapshot = null;
+        if (snapshot.isPresent() && snapshot.get().index() == index) {
+            snapshot = Optional.empty();
             snapshotInProgress = false;
         }
     }
@@ -300,7 +367,7 @@ public class UnstableLog {
         offset = snapshotToRestore.index() + 1;
         this.persistingUpTo = offset;
         entries = new ArrayList<>();
-        snapshot = snapshotToRestore;
+        snapshot = Optional.of(snapshotToRestore);
         snapshotInProgress = false;
     }
 
@@ -343,7 +410,7 @@ public class UnstableLog {
                 "offset=" + offset +
                 ", persistingUpTo=" + persistingUpTo +
                 ", entries=" + entries.size() +
-                ", snapshot=" + (snapshot != null ? snapshot.index() : "none") +
+                ", snapshot=" + (snapshot.isPresent() ? snapshot.get().index() : "none") +
                 ", snapshotInProgress=" + snapshotInProgress +
                 '}';
     }
