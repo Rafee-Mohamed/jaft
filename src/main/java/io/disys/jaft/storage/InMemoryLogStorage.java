@@ -1,14 +1,12 @@
 package io.disys.jaft.storage;
 
 import io.disys.jaft.core.Snapshot;
-import io.disys.jaft.cluster.membership.JointConfig;
-import io.disys.jaft.cluster.membership.MajorityConfig;
 import io.disys.jaft.cluster.membership.MembershipConfig;
-import io.disys.jaft.cluster.membership.MembershipTransition;
 import io.disys.jaft.engine.PersistentState;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -38,11 +36,90 @@ public class InMemoryLogStorage implements LogStorage {
      * Creates an empty in-memory log with default initial state.
      */
     public InMemoryLogStorage() {
-        persistentState = new PersistentState(0, null);
-        var membershipConfig = new MembershipConfig(new JointConfig(new MajorityConfig(Set.of()), new MajorityConfig(Set.of())), Set.of(), Set.of(), MembershipTransition.JOINT_AUTO);
-        snapshot = new Snapshot(0, 0, membershipConfig, new byte[0]);
-        entries = new ArrayList<>(1024);
-        entries.add(new Entry.Placeholder(0, 0));
+        this(List.of(new Entry.Placeholder(0, 0)));
+    }
+
+    /**
+     * Creates storage with the given snapshot and log entries.
+     *
+     * <p>The first entry must be a {@link Entry.Placeholder} whose term and
+     * index match the snapshot boundary. Used for restart when loading
+     * persisted state.</p>
+     *
+     * @param initialSnapshot the snapshot (membership and boundary)
+     * @param initialEntries  entries starting with a placeholder at the
+     *                        snapshot boundary
+     * @throws IllegalArgumentException if entries is empty, first entry is
+     *         not a Placeholder, or placeholder does not match snapshot boundary
+     */
+    public InMemoryLogStorage(Snapshot initialSnapshot, List<Entry> initialEntries) {
+        if (initialEntries.isEmpty())
+            throw new IllegalArgumentException("Entries cannot be empty");
+
+        if (!(initialEntries.getFirst() instanceof Entry.Placeholder(var term, var index)))
+            throw new IllegalArgumentException("First entry must be Placeholder");
+
+        if (term != initialSnapshot.term() || index != initialSnapshot.index())
+            throw new IllegalArgumentException("Placeholder must match snapshot boundary");
+
+        persistentState = new PersistentState(0, Optional.empty());
+        snapshot = initialSnapshot;
+        entries = new ArrayList<>(initialEntries);
+    }
+
+
+    /**
+     * Creates storage from entries. The first entry must be a
+     * {@link Entry.Placeholder} (snapshot boundary); the snapshot is
+     * derived from it.
+     *
+     * @param initialEntries entries starting with a Placeholder
+     * @throws IllegalArgumentException if entries is empty or first entry
+     *         is not a Placeholder
+     */
+    public InMemoryLogStorage(List<Entry> initialEntries) {
+        this(snapshotFromEntries(initialEntries), initialEntries);
+
+    }
+
+    /** Derives snapshot from the first (placeholder) entry. */
+    private static Snapshot snapshotFromEntries(List<Entry> entries) {
+        if (entries.isEmpty())
+            throw new IllegalArgumentException("Entries cannot be empty");
+
+        if (entries.getFirst() instanceof Entry.Placeholder(var term, var index))
+            return new Snapshot(term, index, MembershipConfig.of(Set.of(), Set.of()), new byte[0]);
+
+        throw new IllegalArgumentException("First entry must be Placeholder");
+    }
+
+    /**
+     * Creates storage with pre-built entries for testing.
+     *
+     * <p>Equivalent to {@code new InMemoryLogStorage(entries)}. The first
+     * entry must be a {@link Entry.Placeholder}; the snapshot uses empty
+     * membership.</p>
+     *
+     * @param entries entries starting with a Placeholder
+     * @return storage with the given entries
+     * @throws IllegalArgumentException if entries is empty or first entry
+     *         is not a Placeholder
+     */
+    public static InMemoryLogStorage withEntries(List<Entry> entries) {
+        return new InMemoryLogStorage(entries);
+    }
+
+    /**
+     * Creates storage with only a snapshot (no log entries beyond the boundary).
+     *
+     * <p>Useful for testing when the log has been compacted to the snapshot
+     * or when simulating a freshly loaded snapshot with no subsequent entries.</p>
+     *
+     * @param snapshot the snapshot (term, index, membership)
+     * @return storage with placeholder at the snapshot boundary, no data entries
+     */
+    public static InMemoryLogStorage withSnapshot(Snapshot snapshot) {
+        return new InMemoryLogStorage(snapshot, List.of(new Entry.Placeholder(snapshot.term(), snapshot.index())));
     }
 
     /** {@inheritDoc} */
@@ -227,5 +304,34 @@ public class InMemoryLogStorage implements LogStorage {
         entriesAfterCompaction.addAll(entries.subList(lastCompactEntryIdx + 1, entries.size()));
 
         entries = entriesAfterCompaction;
+    }
+
+
+    /**
+     * Creates a snapshot at the given index and replaces the current snapshot.
+     *
+     * <p>The snapshot uses the term at {@code index} from the log, plus the
+     * supplied membership config and data. The index must be strictly after
+     * the current snapshot boundary and at or before the last entry.</p>
+     *
+     * @param index log index at which to create the snapshot
+     * @param mc    membership configuration for the snapshot
+     * @param data  opaque snapshot payload
+     * @return the new snapshot (also stored as the current snapshot)
+     * @throws SnapshotOutOfDateException if {@code index} is at or before the
+     *         current snapshot boundary
+     * @throws EntryUnavailableException if {@code index} is beyond the last entry
+     * @throws StorageException          if the read fails
+     */
+    public synchronized Snapshot createSnapshot(long index, MembershipConfig mc, byte[] data) throws StorageException {
+        if (index <= snapshot.index()) {
+            throw new SnapshotOutOfDateException(index, snapshot.index());
+        }
+
+        if (index > lastIndex()) {
+            throw new EntryUnavailableException(index);
+        }
+
+        return snapshot = new Snapshot(index, term(index), mc, data);
     }
 }
