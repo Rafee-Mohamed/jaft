@@ -18,19 +18,19 @@ public class InMemoryLogStorageTest {
     record TestPayload(long bytes) implements Payload {}
 
     /**
-     * Builds entries for test setup: a placeholder at the snapshot boundary followed
-     * by data entries. Indices start at {@code placeholderIndex + 1} and increment.
+     * Builds entries for test setup: a snapshot sentinel at the snapshot boundary
+     * followed by data entries. Indices start at {@code snapshotIndex + 1} and increment.
      *
-     * @param placeholderIndex index of the placeholder (snapshot boundary)
-     * @param placeholderTerm  term of the placeholder
-     * @param terms            terms for each subsequent data entry
-     * @return list with Placeholder first, then Data entries (payload size 8)
+     * @param snapshotIndex index of the snapshot boundary sentinel
+     * @param snapshotTerm  term of the snapshot boundary sentinel
+     * @param terms         terms for each subsequent data entry
+     * @return list with Snapshot sentinel first, then Data entries (payload size 8)
      */
-    static List<Entry> entries(long placeholderIndex, long placeholderTerm, long... terms) {
+    static List<Entry> entries(long snapshotIndex, long snapshotTerm, long... terms) {
         var entries = new ArrayList<Entry>();
-        entries.add(new Entry.Placeholder(placeholderTerm, placeholderIndex));
+        entries.add(new Entry.Snapshot(snapshotTerm, snapshotIndex));
 
-        var idx = placeholderIndex + 1;
+        var idx = snapshotIndex + 1;
         for (var term: terms) {
             entries.add(new Entry.Data(term, idx++, new TestPayload(8)));
         }
@@ -69,7 +69,7 @@ public class InMemoryLogStorageTest {
     /* ==================== FIRST INDEX / LAST INDEX ==================== */
 
     @Test
-    void firstIndexReturnsPlaceholderIndexPlusOne() {
+    void firstIndexReturnsSnapshotIndexPlusOne() {
         assertThat(storage.firstIndex()).isEqualTo(4);
     }
 
@@ -108,7 +108,7 @@ public class InMemoryLogStorageTest {
     }
 
     @Test
-    void compactRetainsPlaceholderAndRemainingEntries() throws StorageException {
+    void compactRetainsSnapshotSentinelAndRemainingEntries() throws StorageException {
         storage.compact(4);
 
         assertThat(storage.offset()).isEqualTo(4);
@@ -180,7 +180,7 @@ public class InMemoryLogStorageTest {
     }
 
     @Test
-    void entriesThrowsEntryUnavailableWhenOnlyPlaceholder() {
+    void entriesThrowsEntryUnavailableWhenOnlySnapshot() {
         var snapshot = new Snapshot(
                 3,
                 3,

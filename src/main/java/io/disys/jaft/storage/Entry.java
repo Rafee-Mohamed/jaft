@@ -12,7 +12,9 @@ import java.util.List;
  * distinguish the kinds of entries the protocol produces:</p>
  *
  * <ul>
- *   <li>{@link Placeholder} - sentinel at the log's base (snapshot boundary)</li>
+ *   <li>{@link Snapshot} - sentinel at the log's base marking the snapshot boundary;
+ *       never replicated, local to the in-memory log only</li>
+ *   <li>{@link Placeholder} - no-op entry appended by a newly elected leader (§5.4.2)</li>
  *   <li>{@link Data} - client-proposed data carrying a {@link Payload}</li>
  *   <li>{@link MembershipChange} - cluster membership reconfiguration</li>
  *   <li>{@link LeaveJoint} - marker to exit joint consensus</li>
@@ -61,11 +63,25 @@ public sealed interface Entry {
     }
 
     /**
-     * Sentinel entry at the log's base. Occupies the index covered by the
-     * most recent snapshot and carries no data - it exists so that
+     * Sentinel at the log's base marking the snapshot boundary. Occupies the
+     * index covered by the most recent snapshot so that
      * {@code term(firstIndex - 1)} is always available for log matching.
      *
-     * @param term  the term at this index
+     * <p>This entry is local to the in-memory log only - it is never
+     * replicated or sent to peers.</p>
+     *
+     * @param term  the term at the snapshot boundary index
+     * @param index the snapshot boundary index
+     */
+    record Snapshot(long term, long index) implements Entry {}
+
+    /**
+     * No-op entry appended by a newly elected leader. Required by Raft §5.4.2:
+     * a leader can only commit entries from its own term, so appending this
+     * entry in the current term allows prior-term entries to be committed
+     * indirectly once this entry is replicated and committed.
+     *
+     * @param term  the leader term that created this entry
      * @param index the log index
      */
     record Placeholder(long term, long index) implements Entry {}

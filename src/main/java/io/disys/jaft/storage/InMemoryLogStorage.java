@@ -16,10 +16,10 @@ import java.util.Set;
  * shared across threads, but performance is not a concern - this is
  * not intended for production use.</p>
  *
- * <p>The log is backed by an {@link ArrayList} with a
- * {@link Entry.Placeholder} at position zero representing the snapshot
- * boundary. Compaction discards entries up to a given index and
- * replaces them with a new placeholder.</p>
+ * <p>The log is backed by an {@link ArrayList} with an
+ * {@link Entry.Snapshot} at position zero marking the snapshot boundary.
+ * Compaction discards entries up to a given index and replaces them with
+ * a new snapshot sentinel.</p>
  */
 public class InMemoryLogStorage implements LogStorage {
 
@@ -36,13 +36,13 @@ public class InMemoryLogStorage implements LogStorage {
      * Creates an empty in-memory log with default initial state.
      */
     public InMemoryLogStorage() {
-        this(List.of(new Entry.Placeholder(0, 0)));
+        this(List.of(new Entry.Snapshot(0, 0)));
     }
 
     /**
      * Creates storage with the given snapshot and log entries.
      *
-     * <p>The first entry must be a {@link Entry.Placeholder} whose term and
+     * <p>The first entry must be an {@link Entry.Snapshot} whose term and
      * index match the snapshot boundary. Used for restart when loading
      * persisted state.</p>
      *
@@ -56,8 +56,8 @@ public class InMemoryLogStorage implements LogStorage {
         if (initialEntries.isEmpty())
             throw new IllegalArgumentException("Entries cannot be empty");
 
-        if (!(initialEntries.getFirst() instanceof Entry.Placeholder(var term, var index)))
-            throw new IllegalArgumentException("First entry must be Placeholder");
+        if (!(initialEntries.getFirst() instanceof Entry.Snapshot(var term, var index)))
+            throw new IllegalArgumentException("First entry must be Snapshot");
 
         if (term != initialSnapshot.term() || index != initialSnapshot.index())
             throw new IllegalArgumentException("Placeholder must match snapshot boundary");
@@ -69,8 +69,8 @@ public class InMemoryLogStorage implements LogStorage {
 
 
     /**
-     * Creates storage from entries. The first entry must be a
-     * {@link Entry.Placeholder} (snapshot boundary); the snapshot is
+     * Creates storage from entries. The first entry must be an
+     * {@link Entry.Snapshot} (snapshot boundary sentinel); the snapshot is
      * derived from it.
      *
      * @param initialEntries entries starting with a Placeholder
@@ -87,7 +87,7 @@ public class InMemoryLogStorage implements LogStorage {
         if (entries.isEmpty())
             throw new IllegalArgumentException("Entries cannot be empty");
 
-        if (entries.getFirst() instanceof Entry.Placeholder(var term, var index))
+        if (entries.getFirst() instanceof Entry.Snapshot(var term, var index))
             return new Snapshot(term, index, MembershipConfig.of(Set.of(), Set.of()), new byte[0]);
 
         throw new IllegalArgumentException("First entry must be Placeholder");
@@ -97,7 +97,7 @@ public class InMemoryLogStorage implements LogStorage {
      * Creates storage with pre-built entries for testing.
      *
      * <p>Equivalent to {@code new InMemoryLogStorage(entries)}. The first
-     * entry must be a {@link Entry.Placeholder}; the snapshot uses empty
+     * entry must be an {@link Entry.Snapshot}; the snapshot uses empty
      * membership.</p>
      *
      * @param entries entries starting with a Placeholder
@@ -119,7 +119,7 @@ public class InMemoryLogStorage implements LogStorage {
      * @return storage with placeholder at the snapshot boundary, no data entries
      */
     public static InMemoryLogStorage withSnapshot(Snapshot snapshot) {
-        return new InMemoryLogStorage(snapshot, List.of(new Entry.Placeholder(snapshot.term(), snapshot.index())));
+        return new InMemoryLogStorage(snapshot, List.of(new Entry.Snapshot(snapshot.term(), snapshot.index())));
     }
 
     /** {@inheritDoc} */
@@ -271,7 +271,7 @@ public class InMemoryLogStorage implements LogStorage {
 
         snapshot = nextSnapshot;
         entries = new ArrayList<>();
-        entries.add(new Entry.Placeholder(snapshot.term(), snapshot.index()));
+        entries.add(new Entry.Snapshot(snapshot.term(), snapshot.index()));
     }
 
 
@@ -300,7 +300,7 @@ public class InMemoryLogStorage implements LogStorage {
 
         var entriesAfterCompaction = new ArrayList<Entry>(entries.size() - lastCompactEntryIdx + 1);
 
-        entriesAfterCompaction.add(new Entry.Placeholder(entries.get(lastCompactEntryIdx).term(), entries.get(lastCompactEntryIdx).index()));
+        entriesAfterCompaction.add(new Entry.Snapshot(entries.get(lastCompactEntryIdx).term(), entries.get(lastCompactEntryIdx).index()));
         entriesAfterCompaction.addAll(entries.subList(lastCompactEntryIdx + 1, entries.size()));
 
         entries = entriesAfterCompaction;

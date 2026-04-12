@@ -473,6 +473,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
                 case Entry.MembershipChange mc -> membershipChangeInput = new RaftInput.ApplyMembership(mc.membershipChanges());
                 case Entry.LeaveJoint _ -> membershipChangeInput = new RaftInput.ApplyLeaveJoint();
                 case Entry.Placeholder _ -> {}
+                case Entry.Snapshot _ -> {}
             }
         }
 
