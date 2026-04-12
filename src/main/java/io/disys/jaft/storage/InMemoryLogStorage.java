@@ -10,11 +10,11 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * In-memory {@link LogStorage} implementation for testing and prototyping.
+ * In-memory {@link LogStorage} implementation.
  *
- * <p>All operations are {@code synchronized} so the instance can be
- * shared across threads, but performance is not a concern - this is
- * not intended for production use.</p>
+ * <p>Not synchronized — callers are responsible for thread safety.
+ * Use {@link SynchronizedInMemoryLogStorage} when concurrent access
+ * is required.</p>
  *
  * <p>The log is backed by an {@link ArrayList} with an
  * {@link Entry.Snapshot} at position zero marking the snapshot boundary.
@@ -29,7 +29,7 @@ public class InMemoryLogStorage implements LogStorage {
     /** The most recent snapshot. */
     private Snapshot snapshot;
 
-    /** The log entries, starting with a placeholder at the snapshot boundary. */
+    /** The log entries, starting with an Entry.Snapshot sentinel at position zero. */
     private List<Entry> entries;
 
     /**
@@ -47,10 +47,10 @@ public class InMemoryLogStorage implements LogStorage {
      * persisted state.</p>
      *
      * @param initialSnapshot the snapshot (membership and boundary)
-     * @param initialEntries  entries starting with a placeholder at the
+     * @param initialEntries  entries starting with a snapshot sentinel at the
      *                        snapshot boundary
      * @throws IllegalArgumentException if entries is empty, first entry is
-     *         not a Placeholder, or placeholder does not match snapshot boundary
+     *         not a Snapshot, or snapshot sentinel does not match snapshot boundary
      */
     public InMemoryLogStorage(Snapshot initialSnapshot, List<Entry> initialEntries) {
         if (initialEntries.isEmpty())
@@ -60,7 +60,7 @@ public class InMemoryLogStorage implements LogStorage {
             throw new IllegalArgumentException("First entry must be Snapshot");
 
         if (term != initialSnapshot.term() || index != initialSnapshot.index())
-            throw new IllegalArgumentException("Placeholder must match snapshot boundary");
+            throw new IllegalArgumentException("Snapshot sentinel must match snapshot boundary");
 
         persistentState = new PersistentState(0, Optional.empty());
         snapshot = initialSnapshot;
@@ -73,16 +73,16 @@ public class InMemoryLogStorage implements LogStorage {
      * {@link Entry.Snapshot} (snapshot boundary sentinel); the snapshot is
      * derived from it.
      *
-     * @param initialEntries entries starting with a Placeholder
+     * @param initialEntries entries starting with a Snapshot sentinel
      * @throws IllegalArgumentException if entries is empty or first entry
-     *         is not a Placeholder
+     *         is not a Snapshot
      */
     public InMemoryLogStorage(List<Entry> initialEntries) {
         this(snapshotFromEntries(initialEntries), initialEntries);
 
     }
 
-    /** Derives snapshot from the first (placeholder) entry. */
+    /** Derives snapshot from the first (snapshot sentinel) entry. */
     private static Snapshot snapshotFromEntries(List<Entry> entries) {
         if (entries.isEmpty())
             throw new IllegalArgumentException("Entries cannot be empty");
@@ -90,7 +90,7 @@ public class InMemoryLogStorage implements LogStorage {
         if (entries.getFirst() instanceof Entry.Snapshot(var term, var index))
             return new Snapshot(term, index, MembershipConfig.of(Set.of(), Set.of()), new byte[0]);
 
-        throw new IllegalArgumentException("First entry must be Placeholder");
+        throw new IllegalArgumentException("First entry must be Snapshot");
     }
 
     /**
@@ -100,10 +100,10 @@ public class InMemoryLogStorage implements LogStorage {
      * entry must be an {@link Entry.Snapshot}; the snapshot uses empty
      * membership.</p>
      *
-     * @param entries entries starting with a Placeholder
+     * @param entries entries starting with a Snapshot sentinel
      * @return storage with the given entries
      * @throws IllegalArgumentException if entries is empty or first entry
-     *         is not a Placeholder
+     *         is not a Snapshot
      */
     public static InMemoryLogStorage withEntries(List<Entry> entries) {
         return new InMemoryLogStorage(entries);
@@ -116,7 +116,7 @@ public class InMemoryLogStorage implements LogStorage {
      * or when simulating a freshly loaded snapshot with no subsequent entries.</p>
      *
      * @param snapshot the snapshot (term, index, membership)
-     * @return storage with placeholder at the snapshot boundary, no data entries
+     * @return storage with snapshot sentinel at the boundary, no data entries
      */
     public static InMemoryLogStorage withSnapshot(Snapshot snapshot) {
         return new InMemoryLogStorage(snapshot, List.of(new Entry.Snapshot(snapshot.term(), snapshot.index())));
@@ -124,22 +124,22 @@ public class InMemoryLogStorage implements LogStorage {
 
     /** {@inheritDoc} */
     @Override
-    public synchronized InitialState initialState() throws StorageException {
+    public InitialState initialState() throws StorageException {
         return new InitialState(persistentState, snapshot.membership());
     }
 
     /**
-     * Returns the index of the placeholder entry (snapshot boundary).
+     * Returns the index of the snapshot sentinel entry (snapshot boundary).
      *
      * @return the offset index
      */
-    public synchronized long offset() {
+    public long offset() {
         return entries.getFirst().index();
     }
 
     /** {@inheritDoc} */
     @Override
-    public synchronized List<Entry> entries(long low, long high, long maxSize) throws StorageException {
+    public List<Entry> entries(long low, long high, long maxSize) throws StorageException {
         var offset = offset();
         if (low <= offset)
             throw new CompactedException(low);
@@ -174,7 +174,7 @@ public class InMemoryLogStorage implements LogStorage {
 
     /** {@inheritDoc} */
     @Override
-    public synchronized long term(long index) throws StorageException {
+    public long term(long index) throws StorageException {
         var offset = offset();
 
         if (index < offset)
@@ -189,19 +189,19 @@ public class InMemoryLogStorage implements LogStorage {
 
     /** {@inheritDoc} */
     @Override
-    public synchronized long firstIndex() {
+    public long firstIndex() {
         return entries.getFirst().index() + 1;
     }
 
     /** {@inheritDoc} */
     @Override
-    public synchronized long lastIndex() {
+    public long lastIndex() {
         return entries.getLast().index();
     }
 
     /** {@inheritDoc} */
     @Override
-    public synchronized Snapshot snapshot() throws StorageException {
+    public Snapshot snapshot() throws StorageException {
         return snapshot;
     }
 
@@ -210,7 +210,7 @@ public class InMemoryLogStorage implements LogStorage {
      *
      * @param persistentState the new hard state
      */
-    public synchronized void setPersistentState(PersistentState persistentState) {
+    public void setPersistentState(PersistentState persistentState) {
         this.persistentState = persistentState;
     }
 
@@ -228,7 +228,7 @@ public class InMemoryLogStorage implements LogStorage {
      * @param newEntries entries to persist
      * @throws StorageException if the append fails
      */
-    public synchronized void append(List<Entry> newEntries) throws StorageException {
+    public void append(List<Entry> newEntries) throws StorageException {
         if (newEntries.isEmpty())
             return;
 
@@ -264,7 +264,7 @@ public class InMemoryLogStorage implements LogStorage {
      * @param nextSnapshot the snapshot to apply
      * @throws SnapshotOutOfDateException if the snapshot is older than the current one
      */
-    public synchronized void applySnapshot(Snapshot nextSnapshot) throws SnapshotOutOfDateException {
+    public void applySnapshot(Snapshot nextSnapshot) throws SnapshotOutOfDateException {
         if (snapshot.index() != 0 && snapshot.index() >= nextSnapshot.index()) {
             throw new SnapshotOutOfDateException(nextSnapshot.index(), snapshot.index());
         }
@@ -278,7 +278,7 @@ public class InMemoryLogStorage implements LogStorage {
     /**
      * Discards log entries up to {@code compactIndex} (inclusive).
      *
-     * <p>A placeholder is retained at {@code compactIndex} so that
+     * <p>A snapshot sentinel is retained at {@code compactIndex} so that
      * {@code term(compactIndex)} remains available for log matching.
      * Only compact up to the applied index - never compact uncommitted
      * entries.</p>
@@ -287,7 +287,7 @@ public class InMemoryLogStorage implements LogStorage {
      * @throws CompactedException        if already compacted past this index
      * @throws EntryUnavailableException if {@code compactIndex > lastIndex()}
      */
-    public synchronized void compact(long compactIndex) throws CompactedException, EntryUnavailableException {
+    public void compact(long compactIndex) throws CompactedException, EntryUnavailableException {
         var offset = offset();
 
         if (compactIndex <= offset)
@@ -323,7 +323,7 @@ public class InMemoryLogStorage implements LogStorage {
      * @throws EntryUnavailableException if {@code index} is beyond the last entry
      * @throws StorageException          if the read fails
      */
-    public synchronized Snapshot createSnapshot(long index, MembershipConfig mc, byte[] data) throws StorageException {
+    public Snapshot createSnapshot(long index, MembershipConfig mc, byte[] data) throws StorageException {
         if (index <= snapshot.index()) {
             throw new SnapshotOutOfDateException(index, snapshot.index());
         }
