@@ -32,7 +32,10 @@ public sealed interface Message {
      * A message exchanged between nodes over the network. Carries
      * at least {@code to} and {@code from} fields for routing.
      */
-    sealed interface Peer extends Message {}
+    sealed interface Peer extends Message {
+        NodeId from();
+        NodeId to();
+    }
 
     /* ==================== REPLICATION ==================== */
 

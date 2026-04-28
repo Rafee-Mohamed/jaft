@@ -6,7 +6,7 @@ package io.disys.jaft.storage;
  *
  * @see InMemoryLogStorage#applySnapshot(io.disys.jaft.core.Snapshot)
  */
-class SnapshotOutOfDateException extends StorageException {
+public class SnapshotOutOfDateException extends StorageException {
 
     /**
      * Creates a snapshot-out-of-date exception.
