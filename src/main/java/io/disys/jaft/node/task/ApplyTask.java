@@ -20,6 +20,7 @@ import java.util.List;
 public final class ApplyTask<T extends Payload> implements CompletableTask {
 
     private final List<T> entriesToApply;
+    private final long lastIndex;
     private final Runnable onComplete;
 
     /**
@@ -30,6 +31,7 @@ public final class ApplyTask<T extends Payload> implements CompletableTask {
     @SuppressWarnings("unchecked")
     public ApplyTask(List<Entry.Data> entriesToApply, Runnable onComplete) {
         this.entriesToApply = entriesToApply.stream().map(d -> (T) d.data()).toList();
+        this.lastIndex = entriesToApply.isEmpty() ? 0L : entriesToApply.getLast().index();
         this.onComplete = onComplete;
     }
 
@@ -41,5 +43,10 @@ public final class ApplyTask<T extends Payload> implements CompletableTask {
     /** @return the typed payloads to apply to the state machine */
     public List<T> entriesToApply() {
         return entriesToApply;
+    }
+
+    /** @return the log index of the last entry in this batch */
+    public long lastIndex() {
+        return lastIndex;
     }
 }

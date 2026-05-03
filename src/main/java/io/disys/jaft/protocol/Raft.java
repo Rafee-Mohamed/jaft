@@ -334,15 +334,20 @@ public class Raft {
      * persistence go to {@code messagesAfterAppend}; all others go to
      * {@code messages} for immediate delivery.
      *
+     * <p>{@link Message.AppendEntriesResponse} must wait because the follower
+     * must persist entries before acknowledging them. {@link Message.RequestVoteResponse}
+     * must wait because the follower must persist {@code votedFor} before responding.
+     * {@link Message.RequestPreVoteResponse} does NOT require persistence - pre-vote
+     * changes no durable state - so it is delivered immediately.</p>
+     *
      * @param m the message to buffer
      */
     private void send(Message.Peer m) {
-        if (m instanceof Message.AppendEntriesResponse || m instanceof Message.RequestPreVoteResponse || m instanceof Message.RequestVoteResponse) {
+        if (m instanceof Message.AppendEntriesResponse || m instanceof Message.RequestVoteResponse) {
             messagesAfterAppend.add(m);
         } else {
             messages.add(m);
         }
-
     }
 
     /**
@@ -680,14 +685,19 @@ public class Raft {
     }
 
     /**
-     * Handles a tick for the PreCandidate role. Same election round timer
-     * logic as {@link #handleTick(Candidate)}  - if the pre-vote round
-     * stalls, the node retries with a fresh pre-election and new randomized
-     * timeout.
+     * Handles a tick for the PreCandidate role. If the pre-vote round times
+     * out without reaching quorum in either direction, the node falls back to
+     * Follower with a fresh randomized election timer.
+     *
+     * <p>Unlike Candidate (which retries with a new term on timeout), a
+     * PreCandidate that times out has not committed to any term change. The
+     * correct response is to return to Follower and let the normal election
+     * timer trigger a fresh pre-election. This ensures pre-vote always starts
+     * from Follower</p>
      */
     private void handleTick(PreCandidate pc) throws StorageException {
         if (pc.electionRoundTimedOutAfterTick()) {
-            step(new Message.TriggerElection(id));
+            becomeFollower(term);
         }
     }
 
@@ -898,7 +908,6 @@ public class Raft {
     private void handleMessage(PreCandidate pc, Message m) throws StorageException {
         switch (m) {
             case Message.Tick _ -> handleTick(pc);
-            case Message.TriggerElection(_) -> preCandidateElection();
             case Message.RequestPreVote preVote -> rejectPreVote(preVote);
             case Message.RequestPreVoteResponse res -> handlePreVoteResponse(pc, res);
             case Message.RequestVote voteReq -> handleHigherTermVoteReq(voteReq);

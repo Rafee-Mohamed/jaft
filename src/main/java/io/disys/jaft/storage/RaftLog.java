@@ -439,7 +439,9 @@ public class RaftLog {
             return List.of();
 
         var low = applying + 1;
-        var high = maxAppliableIndex();
+        // slice() is [low, high) exclusive; maxAppliableIndex() is the inclusive upper bound,
+        // so pass high + 1 to include the entry at maxAppliableIndex
+        var high = maxAppliableIndex() + 1;
 
         if (low >= high)
             return List.of();

@@ -18,8 +18,10 @@ import io.disys.jaft.storage.Entry;
 import io.disys.jaft.storage.LogStorage;
 import io.disys.jaft.storage.StorageException;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.random.RandomGenerator;
 
 /**
@@ -162,11 +164,11 @@ public class Node<T extends TrackablePayload<ID>, ID> {
     private final DataProposalTracker<T, ID> dataProposalTracker;
 
     /**
-     * Current lifecycle state. Volatile because it is read by external
-     * threads (public API methods) and written by the event loop and
-     * {@link #shutdown()}.
+     * Current lifecycle state. AtomicReference so that external threads
+     * (public API, shutdown) and the event loop can transition it with
+     * CAS, preventing double-shutdown and shutdown/terminate races.
      */
-    private volatile State state;
+    private final AtomicReference<State> state = new AtomicReference<>(State.CREATED);
 
 
     /**
@@ -199,7 +201,6 @@ public class Node<T extends TrackablePayload<ID>, ID> {
         readTracker = new ReadTracker();
         membershipTracker = new MembershipTracker();
         dataProposalTracker = new DataProposalTracker<>();
-        state = State.CREATED;
         config = nodeConfig;
     }
 
@@ -216,7 +217,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public CompletableFuture<Void> propose(T data) throws InterruptedException {
-        if (state != State.RUNNING) {
+        if (state.get() != State.RUNNING) {
             return CompletableFuture.failedFuture(new NodeLifecycleException.ShuttingDown());
         }
         var future = new CompletableFuture<Void>();
@@ -235,7 +236,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public CompletableFuture<Void> propose(MembershipChanges changes) throws InterruptedException {
-        if (state != State.RUNNING) {
+        if (state.get() != State.RUNNING) {
             return CompletableFuture.failedFuture(new NodeLifecycleException.ShuttingDown());
         }
         var future = new CompletableFuture<Void>();
@@ -253,7 +254,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public CompletableFuture<Void> proposeLeaveJoint() throws InterruptedException {
-        if (state != State.RUNNING) {
+        if (state.get() != State.RUNNING) {
             return CompletableFuture.failedFuture(new NodeLifecycleException.ShuttingDown());
         }
         var future = new CompletableFuture<Void>();
@@ -270,7 +271,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void tick() throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.Tick()));
     }
 
@@ -283,7 +284,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void receive(Message.Peer message) throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.Receive(message)));
     }
 
@@ -297,7 +298,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public CompletableFuture<Void> readIndex() throws InterruptedException {
-        if (state != State.RUNNING) {
+        if (state.get() != State.RUNNING) {
             return CompletableFuture.failedFuture(new NodeLifecycleException.ShuttingDown());
         }
         var future = new CompletableFuture<Void>();
@@ -313,7 +314,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void triggerElection() throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.TriggerElection()));
     }
 
@@ -326,7 +327,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void reportUnreachablePeer(NodeId id) throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.ReportUnreachablePeer(id)));
     }
 
@@ -340,7 +341,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void reportSnapshotStatus(NodeId id, boolean success) throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.ReportSnapshotStatus(id, success)));
     }
 
@@ -353,7 +354,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void transferLeader(NodeId transferee) throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.TransferLeader(transferee)));
     }
 
@@ -365,28 +366,29 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public void forgetLeader() throws InterruptedException {
-        if (state != State.RUNNING) { return; }
+        if (state.get() != State.RUNNING) { return; }
         inbox.put(new Event.Fire(new RaftInput.ForgetLeader()));
     }
 
     /**
-     * Initiates graceful shutdown. Transitions the node to
-     * {@link State#SHUTTING_DOWN} and sends a poison pill to wake
-     * the event loop.
+     * Initiates graceful shutdown. Atomically transitions the node from
+     * {@link State#RUNNING} to {@link State#SHUTTING_DOWN} and sends a
+     * poison pill to wake the event loop.
      *
-     * <p>Thread-safe. Returns {@code false} if the node is not running.</p>
+     * <p>Thread-safe. If the node is not in {@link State#RUNNING}, the
+     * state is not changed and the actual current state is returned so
+     * the caller knows why the transition did not happen.</p>
      *
-     * @return {@code true} if shutdown was initiated, {@code false} if
-     *         the node was not in the running state
+     * @return {@link State#SHUTTING_DOWN} if the transition succeeded,
+     *         or the current state if the node was not running
      * @throws InterruptedException if the calling thread is interrupted
      */
-    public boolean shutdown() throws InterruptedException {
-        if (state != State.RUNNING) {
-            return false;
+    public State shutdown() throws InterruptedException {
+        if (!state.compareAndSet(State.RUNNING, State.SHUTTING_DOWN)) {
+            return state.get();
         }
-        state = State.SHUTTING_DOWN;
         inbox.put(new Event.Empty());
-        return true;
+        return State.SHUTTING_DOWN;
     }
 
     /**
@@ -399,7 +401,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws InterruptedException if the calling thread is interrupted
      */
     public CompletableFuture<Status> status() throws InterruptedException {
-        if (state != State.RUNNING) {
+        if (state.get() != State.RUNNING) {
             return CompletableFuture.failedFuture(new NodeLifecycleException.ShuttingDown());
         }
         var future = new CompletableFuture<Status>();
@@ -683,7 +685,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
 
         advanceAndPublishWhileShutdown(transitionEvents, deadline);
 
-        while (System.nanoTime() < deadline && state == State.SHUTTING_DOWN) {
+        while (System.nanoTime() < deadline && state.get() == State.SHUTTING_DOWN) {
             var remaining = deadline - System.nanoTime();
 
             var event = inbox.poll(remaining, TimeUnit.NANOSECONDS);
@@ -700,13 +702,23 @@ public class Node<T extends TrackablePayload<ID>, ID> {
 
 
     /**
-     * The main event loop. Blocks on the inbox, batches events, processes
-     * them through the engine, and publishes work to the outbox. Exits
-     * when the state is no longer {@link State#RUNNING}.
+     * The main event loop. Batches events, processes them through the
+     * engine, and publishes work to the outbox. Exits when the state is
+     * no longer {@link State#RUNNING}.
      *
-     * <p>If shutdown occurs between {@code inbox.take()} and processing,
-     * the unprocessed events are returned so the shutdown loop can handle
-     * response events among them.</p>
+     * <p>When the outbox has capacity, the loop blocks on the inbox
+     * ({@code inbox.take()}) until an event arrives, then drains any
+     * additional events that arrived concurrently before advancing.</p>
+     *
+     * <p>When the outbox is full, the loop does a short timed poll
+     * ({@code inbox.poll(1ms)}) instead of blocking indefinitely. This
+     * lets the loop retry the capacity check on the next iteration once
+     * the consumer drains the outbox, without starving tick or message
+     * processing.</p>
+     *
+     * <p>If shutdown occurs between inbox intake and processing, the
+     * unprocessed events are returned so the shutdown loop can handle
+     * any response events among them.</p>
      *
      * @return unprocessed events if shutdown interrupted the loop, empty
      *         list otherwise
@@ -714,19 +726,25 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws StorageException if the engine encounters a storage failure
      */
     private List<Event> runningLoop() throws InterruptedException, StorageException {
-        while (state == State.RUNNING) {
+        while (state.get() == State.RUNNING) {
             var events = new ArrayList<Event>();
-            events.add(inbox.take());
+            if (outbox.remainingCapacity() > 0) {
+                events.add(inbox.take());
+            } else {
+                var head = inbox.poll(1, TimeUnit.MILLISECONDS);
+                if (head != null) events.add(head);
+            }
             inbox.drainTo(events);
 
-            if (state != State.RUNNING) {
+            if (state.get() != State.RUNNING) {
                 return events;
             }
 
-            processEvents(events);
-            var work = advanceAndReconcile();
-            if (work.isPresent()) {
-                outbox.put(work.get());
+            if (!events.isEmpty()) processEvents(events);
+
+            if (outbox.remainingCapacity() > 0) {
+                var work = advanceAndReconcile();
+                work.ifPresent(outbox::offer);
             }
         }
 
@@ -747,7 +765,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws NodeLifecycleException.GracefulShutdown if shutdown was clean
      */
     private void terminate(Throwable failure) throws NodeLifecycleException.Termination, NodeLifecycleException.GracefulShutdown {
-        state = State.TERMINATING;
+        state.set(State.TERMINATING);
 
         NodeLifecycleException cause = failure == null
                 ? new NodeLifecycleException.GracefulShutdown()
@@ -769,7 +787,7 @@ public class Node<T extends TrackablePayload<ID>, ID> {
             Thread.currentThread().interrupt();
         }
 
-        state = State.TERMINATED;
+        state.set(State.TERMINATED);
 
         switch (cause) {
             case NodeLifecycleException.Termination e -> throw e;
@@ -792,14 +810,13 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      * @throws IllegalStateException if the node is not in {@link State#CREATED}
      */
     public void run() throws NodeLifecycleException.Termination, NodeLifecycleException.GracefulShutdown  {
-        if (state != State.CREATED) {
-            throw new IllegalStateException("Node already started, Current state is " + state);
+        if (!state.compareAndSet(State.CREATED, State.RUNNING)) {
+            throw new IllegalStateException("Node already started, current state is " + state.get());
         }
-        state = State.RUNNING;
         Throwable failure = null;
         try {
             var transitionEvents = runningLoop();
-            if (state == State.SHUTTING_DOWN) {
+            if (state.get() == State.SHUTTING_DOWN) {
                 shutdownLoop(transitionEvents);
             }
         } catch (InterruptedException e) {
@@ -824,5 +841,20 @@ public class Node<T extends TrackablePayload<ID>, ID> {
      */
     public WorkItem<T> takeWork() throws InterruptedException {
         return outbox.take();
+    }
+
+    /**
+     * Waits up to {@code timeout} for a work item from the outbox.
+     *
+     * <p>Returns empty if the timeout elapses before any work is
+     * available, allowing the caller to perform scheduled work
+     * (e.g. lease expiry) before polling again.</p>
+     *
+     * @param timeout how long to wait
+     * @return the next work item, or empty if the timeout elapsed
+     * @throws InterruptedException if the calling thread is interrupted
+     */
+    public Optional<WorkItem<T>> pollWork(Duration timeout) throws InterruptedException {
+        return Optional.ofNullable(outbox.poll(timeout.toMillis(), TimeUnit.MILLISECONDS));
     }
 }

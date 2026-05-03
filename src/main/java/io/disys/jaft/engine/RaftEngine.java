@@ -281,7 +281,7 @@ public class RaftEngine {
             }
         }
 
-        if (raft.log().hasUnstableEntries()) {
+        if (!entriesToPersist.isEmpty() || snapshot.isPresent()) {
             var lastEntryToPersist = raft.log().lastEntryId();
             responsesAfterPersist.add(new Message.LogPersisted(raft.term(), lastEntryToPersist.term(), lastEntryToPersist.index(), snapshot));
         }
