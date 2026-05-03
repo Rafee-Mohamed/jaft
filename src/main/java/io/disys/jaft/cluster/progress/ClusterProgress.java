@@ -86,13 +86,22 @@ public class ClusterProgress {
     /**
      * Builds the initial progress map from the membership config.
      *
-     * <p>Every member gets a fresh {@link PeerProgress} starting in
-     * {@link ReplicationState.Probe Probe} state. The leader's own
-     * progress is then promoted to
-     * {@link ReplicationState.Replicate Replicate}.</p>
+     * <p>The leader's own progress starts in Replicate with
+     * {@code match = lastIndex} (it knows its own log exactly).
+     * Every follower peer starts in Probe with {@code match = 0}
+     * (the leader doesn't yet know their log state) but with
+     * {@code next = lastIndex + 1} so the first probe goes to the
+     * optimistic position — avoiding a full log scan for peers that
+     * are already caught up.</p>
+     *
+     * <p>Using {@code match = 0} for peers is critical: the heartbeat
+     * carries {@code leaderCommit = min(progress.match, committed)},
+     * so a peer whose true lastIndex is less than the leader's committed
+     * index would crash on {@code commitTo(committed)} if we incorrectly
+     * assumed {@code match = lastIndex}.</p>
      *
      * @param mc        the membership configuration
-     * @param lastIndex the leader's last log index used as match for the leader
+     * @param lastIndex the leader's last log index
      * @throws IllegalStateException if the leader is not in the config
      */
     private void constructPeerProgress(MembershipConfig mc, long lastIndex) {
@@ -104,7 +113,14 @@ public class ClusterProgress {
         var newPeerProgress = new HashMap<NodeId, PeerProgress>(members.size());
 
         for (var member: members) {
-            var newProgress = new PeerProgress(inflightConfig, mc.memberType(member), lastIndex);
+            PeerProgress newProgress;
+            if (member.equals(leaderId)) {
+                // Leader knows its own log exactly.
+                newProgress = new PeerProgress(inflightConfig, mc.memberType(member), lastIndex);
+            } else {
+                // Follower state is unknown: match=0 (conservative), next=lastIndex+1 (optimistic probe).
+                newProgress = new PeerProgress(inflightConfig, mc.memberType(member), 0, lastIndex + 1);
+            }
             newPeerProgress.put(member, newProgress);
         }
 

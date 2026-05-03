@@ -133,13 +133,32 @@ public class PeerProgress {
      * @param matchIndex     the highest log index known to be replicated
      */
     public PeerProgress(PeerInflightConfig inflightConfig, MemberType memberType, long matchIndex) {
+        this(inflightConfig, memberType, matchIndex, matchIndex + 1);
+    }
+
+    /**
+     * Creates a new {@code PeerProgress} with independent match and next indices.
+     *
+     * <p>Allows {@code match} and {@code next} to be set independently.
+     * Use this when the probe should start at a position higher than
+     * {@code match + 1} - for example, when a new leader initialises
+     * follower progress conservatively ({@code match = 0}) but still
+     * wants to probe optimistically from its own last index
+     * ({@code next = leaderLastIndex + 1}).</p>
+     *
+     * @param inflightConfig configuration for flow control (max messages, max bytes)
+     * @param memberType     membership type of this peer
+     * @param matchIndex     the highest log index known to be replicated (0 = unknown)
+     * @param nextIndex      the next log index to send to this peer
+     */
+    public PeerProgress(PeerInflightConfig inflightConfig, MemberType memberType, long matchIndex, long nextIndex) {
         this.inflightConfig = inflightConfig;
         this.memberType = memberType;
         this.state = new ReplicationState.Probe();
         this.active = true;
         this.match = matchIndex;
         this.sentCommit = 0;
-        this.next = matchIndex + 1;
+        this.next = nextIndex;
     }
 
     /* ==================== GETTERS ==================== */
